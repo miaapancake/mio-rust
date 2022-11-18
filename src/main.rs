@@ -1,50 +1,49 @@
+#![allow(unused)]
 mod commands;
 mod config;
+mod models;
 
 use std::env;
 
+use deadpool_postgres::Pool;
 use serenity::async_trait;
 use serenity::model::application::command::Command;
 use serenity::model::application::interaction::{Interaction, InteractionResponseType};
 use serenity::model::gateway::Ready;
+use serenity::model::prelude::Message;
 use serenity::prelude::*;
 
 use dotenv::dotenv;
 
-use tokio_postgres::{NoTls, Error, };
+use tokio_postgres::{ Error, };
 
 use config::db::PgConfig;
 
-async fn connect_db() -> Result<tokio_postgres::Client, Error> {
 
-    let pg_config = PgConfig::new();
-
-    println!("{}", pg_config.make_uri());
-    
-    let (client, connection) =
-        tokio_postgres::connect(&pg_config.make_uri(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
-
-    Ok(client)
+pub struct Handler {
+    pub db_pool: Pool
 }
 
+impl Handler {
 
-struct Handler;
+    pub fn new(db_pool: Pool) -> Self {
+        Self {
+            db_pool: db_pool
+        }
+    }
+
+}
 
 #[async_trait]
 impl EventHandler for Handler {
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+
         if let Interaction::ApplicationCommand(command) = interaction {
             println!("Received command interaction: {}", command.data.name);
-
+            
             let content = match command.data.name.as_str() {
-                "rankroles" => commands::rankroles::run(&command.data.options),
+                "rankroles" => commands::rankroles::run(&command, &self).await,
                 _ => "not implemented :(".to_string(),
             };
 
@@ -59,6 +58,10 @@ impl EventHandler for Handler {
                 println!("Cannot respond to slash command: {}", why);
             }
         }
+    }
+
+    async fn message(&self, ctx: Context, new_message: Message) {
+        print!("{}", new_message.author.tag());
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -85,12 +88,14 @@ async fn main() -> Result<(), Error> {
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
+    let db_pool = PgConfig::new().make_db_pool().await;
+
     // Build our client.
     let mut client = Client::builder(token, GatewayIntents::empty())
-        .event_handler(Handler)
+        .event_handler(Handler::new(db_pool))
         .await
         .expect("Error creating client");
-        
+
     // Finally, start a single shard, and start listening to events.
     //
     // Shards will automatically attempt to reconnect, and will perform
